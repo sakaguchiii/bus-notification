@@ -261,16 +261,60 @@ def check_bus_location(user_id):
             print(f"Error sending LINE message: {e}")
 
 def schedule_bus_check(user_id, departure_time):
-    check_time = departure_time - timedelta(minutes=7)
-    schedule.every().day.at(check_time.strftime("%H:%M")).do(
-        lambda: check_bus_location_loop(user_id)
+    """
+    当日の「departure_time の7分前」に1回だけ実行するスケジュールを設定する。
+    もし departure_time がすでに過ぎている場合は、ここでどうするか別途対応が必要。
+    """
+    # 今の日時
+    now = datetime.now()
+
+    # 乗車予定の時刻が今日の何時何分かを確認
+    # 例: departure_time が 18:30 なら 18:30-7分 = 18:23
+    check_time_obj = departure_time - timedelta(minutes=7)
+
+    # "HH:MM" 形式の文字列を作る(例: "18:23")
+    schedule_time_str = check_time_obj.strftime("%H:%M")
+
+    # schedule ライブラリでは「every().day.at(HH:MM)」が基本。
+    # デフォルトだと「すでに過ぎた時間なら翌日実行」になる可能性があるため、
+    # 自力で 'next_run' を当日の特定日時に設定する。
+    
+    job = schedule.every().day.at(schedule_time_str).do(
+        lambda: check_bus_location_loop(user_id, departure_time, job)
     )
 
-def check_bus_location_loop(user_id):
-    end_time = user_settings[user_id]['time'] + timedelta(minutes=30)
+    # 当日の年月日を now.date() で取得し、そこに check_time_obj の「時:分」を合わせる
+    # 「今日の 18:23」を next_run に設定。
+    # ただし、もし now > 18:23 を過ぎていたら時間がズレるので注意。
+    target_datetime = datetime.combine(now.date(), check_time_obj.time())
+
+    # もしすでに過ぎている場合はどうする？ -> ここでキャンセルする/翌日にする etc.
+    if target_datetime < now:
+        print("[DEBUG] すでに設定時刻を過ぎています。今回は実行しません。")
+        return
+
+    # ジョブの「次回実行時刻」を強制的に当日の target_datetime にする
+    job.next_run = target_datetime
+
+    print(f"[DEBUG] スケジュール設定: 当日 {job.next_run} に1回だけチェックを実行予定")
+
+
+def check_bus_location_loop(user_id, departure_time, job):
+    """
+    実際にバス位置情報を15秒おきに監視するが、
+    今回は乗車時刻 + 5分まで監視し終わったらジョブをキャンセル。
+    """
+    print(f"[DEBUG] 監視開始: user_id={user_id}")
+
+    end_time = departure_time + timedelta(minutes=5)
     while datetime.now() < end_time:
         check_bus_location(user_id)
         time.sleep(15)
+
+    # ループを抜けたら、このジョブをキャンセルして再実行しないようにする
+    schedule.cancel_job(job)
+    print("[DEBUG] 監視終了＆当日ジョブキャンセル")
+
 
 if __name__ == "__main__":
     app.run(port=5000)
