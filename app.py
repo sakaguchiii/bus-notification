@@ -69,19 +69,79 @@ class BusVisionSession:
             print(f"Error searching bus: {e}")
             return None
 
-    def extract_bus_info(self, html_content):
-        if not html_content:
-            return None
-
-        soup = BeautifulSoup(html_content, 'html.parser')
-        approach_info = soup.find('div', class_='approach-info')
-        
-        if approach_info:
-            current_info = approach_info.get_text(strip=True)
-            if current_info != self.last_approach_info:
-                self.last_approach_info = current_info
-                return current_info
+def extract_bus_info(self, html_content):
+    """
+    Bus-Visionの結果HTMLから、
+    - バス情報が無い場合は None
+    - 1番目のバスデータから通過時刻や停留所名を取得し、
+    前回の情報と変わっていれば整形して返す
+    """
+    if not html_content:
         return None
+
+    soup = BeautifulSoup(html_content, 'html.parser')
+
+    # 1) バス情報が無いかどうかチェック
+    error_div = soup.find('div', id='errorMsg', class_='errorMsg')
+    if error_div:
+        # "該当する接近情報はありません。" と出ている
+        return None
+
+    # 2) バス情報(approachData)を全部探す
+    approach_data_list = soup.find_all('div', class_='approachData')
+    if not approach_data_list:
+        # バス情報が1件もない
+        return None
+
+    # 3) その中から <span id="number">1</span> を探す
+    for approach_data in approach_data_list:
+        number_span = approach_data.find('span', id='number')
+        if not number_span:
+            continue
+
+        # "1"という文字列かどうかチェック
+        number_text = number_span.get_text(strip=True)
+        if number_text == "1":
+            # ここが「1番目のバス」の情報
+
+            # 4) approachInfo (例: "11:39に白塚口･栗真中山町を通過")
+            approach_info_div = approach_data.find('div', id='approachInfo')
+            # 5) passInfo (例: "12個前を通過")
+            pass_info_span = approach_data.find('span', id='passInfo')
+
+            if approach_info_div and pass_info_span:
+                # 例: "11:39に白塚口･栗真中山町を通過"
+                approach_text = approach_info_div.get_text(strip=True)
+                # 例: "12個前を通過"
+                pass_info_text = pass_info_span.get_text(strip=True)
+
+                # ★1. 時刻と停留所名を抜き出す
+                #  "11:39に" と "白塚口･栗真中山町を通過" に分割
+                splitted = approach_text.split("に", 1)
+                if len(splitted) == 2:
+                    time_part = splitted[0]       # 11:39
+                    remainder = splitted[1]      # 白塚口･栗真中山町を通過
+                    # "を通過" を除去
+                    stop_name = remainder.replace("を通過", "")
+
+                    # ★2. 何個前かの情報を抜き出す
+                    #  pass_info_text = "12個前を通過"
+                    pass_count = pass_info_text.replace("を通過", "")  # "12個前"
+
+                    # ★3. 通知したい文章を組み立てる
+                    #  例:
+                    #   🚎 11:39
+                    #   白塚口･栗真中山町を通過
+                    #   （12個前）
+                    result_str = f"🚎 {time_part}\n{stop_name}を通過\n（{pass_count}）"
+
+                    # ★4. 前回取得と同じかどうかをチェック
+                    if result_str != self.last_approach_info:
+                        self.last_approach_info = result_str
+                        return result_str
+
+    # ここまで来たら情報なし・または前回と同じ
+    return None
 
 bus_session = BusVisionSession()
 user_settings = {}
