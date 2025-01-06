@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+import threading
 
 load_dotenv()
 
@@ -375,6 +376,15 @@ def check_bus_location_loop(user_id, departure_time, job):
     schedule.cancel_job(job)
     print("[DEBUG] 監視終了＆当日ジョブキャンセル")
 
+def run_schedule_loop():
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
 
 if __name__ == "__main__":
+    # スケジュール実行のスレッドを起動
+    schedule_thread = threading.Thread(target=run_schedule_loop, daemon=True)
+    schedule_thread.start()
+
+    # Flask サーバ起動
     app.run(port=5000)
