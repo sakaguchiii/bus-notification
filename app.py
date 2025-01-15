@@ -48,6 +48,7 @@ class BusVisionSession:
         to_code = self.get_stop_code(to_stop)
         
         if not (from_code and to_code):
+            print("[DEBUG]search_bus: 停留所コードが見つかりません。")
             return None
 
         approach_url = f"{BUSVISION_BASE_URL}approach.html"
@@ -65,9 +66,10 @@ class BusVisionSession:
         
         try:
             response = self.session.get(approach_url, params=params)
+            print(f"[DEBUG]search_bus: リクエスト成功 URL={responce.url}")
             return response.text
         except Exception as e:
-            print(f"Error searching bus: {e}")
+            print(f"[DEBUG]search_bus中にエラーが発生: {e}")
             return None
 
     def extract_bus_info(self, html_content):
@@ -78,6 +80,7 @@ class BusVisionSession:
         前回の情報と変わっていれば整形して返す
         """
         if not html_content:
+            print("[DEBUG]extract_bus_info: HTMLがありません。")
             return None
 
         soup = BeautifulSoup(html_content, 'html.parser')
@@ -85,12 +88,14 @@ class BusVisionSession:
         # 1) バス情報が無いかどうかチェック
         error_div = soup.find('div', id='errorMsg', class_='errorMsg')
         if error_div:
+            print("[DEBUG]extract_bus_info: バスの接近情報はありません。")
             # "該当する接近情報はありません。" と出ている
             return None
 
         # 2) バス情報(approachData)を全部探す
         approach_data_list = soup.find_all('div', class_='approachData')
         if not approach_data_list:
+            print("[DEBUG]extract_bus_info: approachDataがありません。")
             # バス情報が1件もない
             return None
 
@@ -139,8 +144,11 @@ class BusVisionSession:
                         # ★4. 前回取得と同じかどうかをチェック
                         if result_str != self.last_approach_info:
                             self.last_approach_info = result_str
+                            print(f"[DEBUG]extract_bus_info: 新しいバス情報を検出 -> {result_str}")
                             return result_str
-
+                        else:
+                            print("[DEBUG] extract_bus_info: 以前と同じバス情報のため更新なし。")
+        print("[DEBUG] extract_bus_info: 'number=1'のデータが見つからないか、更新情報なし。")
         # ここまで来たら情報なし・または前回と同じ
         return None
 
@@ -211,6 +219,7 @@ def handle_message(event):
     message_text = event.message.text
     
     status = user_status.get(user_id, {'state': None})
+    print(f"[DEBUG] handle_message: user_id={user_id}, テキスト={message_text}, ステータス={status}")
     
     # 「設定開始」と入力した場合、乗車停留所選択ボタンを表示
     if message_text == "設定開始":
@@ -265,7 +274,8 @@ def handle_postback(event):
     user_id = event.source.user_id
     data = event.postback.data
     status = user_status.get(user_id, {'state': None})
-    
+
+    print(f"[DEBUG] handle_postback: user_id={user_id}, data={data}, ステータス={status}")
     # 乗車停留所の選択時
     if status['state'] == 'awaiting_boarding':
         if data == 'boarding_otobe':
@@ -304,8 +314,10 @@ def handle_postback(event):
 def check_bus_location(user_id):
     settings = user_settings.get(user_id)
     if not settings:
+        print(f"[DEBUG] check_bus_location: user_id={user_id} の設定が見つかりません。")
         return
 
+    print(f"[DEBUG] check_bus_location: user_id={user_id}, 乗車={settings['boarding']}, 降車={settings['alighting']} ")
     html_content = bus_session.search_bus(
         settings['boarding'],
         settings['alighting']
@@ -313,13 +325,16 @@ def check_bus_location(user_id):
     
     bus_info = bus_session.extract_bus_info(html_content)
     if bus_info:
+        print(f"[DEBUG] check_bus_location: 新たなバス情報 -> {bus_info}")
         try:
             line_bot_api.push_message(
                 user_id,
                 TextSendMessage(text=f"バス位置情報更新:\n{bus_info}")
             )
         except LineBotApiError as e:
-            print(f"Error sending LINE message: {e}")
+            print(f"[DEBUG]LINEメッセージ送信エラー: {e}")
+    else:
+        print("[DEBUG] check_bus_location: 新たなバス情報はありません。")
 
 def schedule_bus_check(user_id, departure_time):
     """
@@ -328,6 +343,7 @@ def schedule_bus_check(user_id, departure_time):
     """
     # 今の日時
     now = datetime.now()
+    print(f"[DEBUG] schedule_bus_check: user_id={user_id}, 指定時刻={departure_time}, 現在時刻={now}")
 
     # 乗車予定の時刻が今日の何時何分かを確認
     # 例: departure_time が 18:30 なら 18:30-7分 = 18:23
@@ -348,16 +364,18 @@ def schedule_bus_check(user_id, departure_time):
     # 「今日の 18:23」を next_run に設定。
     # ただし、もし now > 18:23 を過ぎていたら時間がズレるので注意。
     target_datetime = datetime.combine(now.date(), check_time_obj.time())
+    print(f"[DEBUG] schedule_bus_check: target_datetime={target_datetime}")
+    
 
     # もしすでに過ぎている場合はどうする？ -> ここでキャンセルする/翌日にする etc.
     if target_datetime < now:
-        print("[DEBUG] すでに設定時刻を過ぎています。今回は実行しません。")
+        print(f"[DEBUG] すでに設定時刻を過ぎています。キャンセルします。 (target_datetime={target_datetime}, now={now})")
         return
 
     # ジョブの「次回実行時刻」を強制的に当日の target_datetime にする
     job.next_run = target_datetime
 
-    print(f"[DEBUG] スケジュール設定: 当日 {job.next_run} に1回だけチェックを実行予定")
+    print(f"[DEBUG] スケジュール設定: 当日 {job.next_run} に1回だけ監視を開始")
 
 
 def check_bus_location_loop(user_id, departure_time, job):
@@ -365,10 +383,14 @@ def check_bus_location_loop(user_id, departure_time, job):
     実際にバス位置情報を15秒おきに監視するが、
     今回は乗車時刻 + 5分まで監視し終わったらジョブをキャンセル。
     """
-    print(f"[DEBUG] 監視開始: user_id={user_id}")
-
+    print(f"[DEBUG] 監視開始: user_id={user_id}, 乗車時刻={departure_time}")
+    start_now = datetime.now()
+    print(f"[DEBUG] check_bus_location_loop 実行時刻: {start_now}")
     end_time = departure_time + timedelta(minutes=5)
+    print(f"[DEBUG] 監視終了予定時刻={end_time}")
     while datetime.now() < end_time:
+        current_time = datetime.now()
+        print(f"[DEBUG] 監視ループ中: 現在={current_time} < 終了予定={end_time}")
         check_bus_location(user_id)
         time.sleep(15)
 
