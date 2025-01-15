@@ -1,3 +1,4 @@
+
 from flask import Flask, request
 import os
 from linebot import LineBotApi, WebhookHandler
@@ -66,7 +67,7 @@ class BusVisionSession:
         
         try:
             response = self.session.get(approach_url, params=params)
-            print(f"[DEBUG]search_bus: リクエスト成功 URL={responce.url}")
+            print(f"[DEBUG]search_bus: リクエスト成功 URL={response.url}")
             return response.text
         except Exception as e:
             print(f"[DEBUG]search_bus中にエラーが発生: {e}")
