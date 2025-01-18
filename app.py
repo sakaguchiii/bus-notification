@@ -256,16 +256,29 @@ def handle_message(event):
     # 時刻入力待ち
     elif status['state'] == 'awaiting_time':
         try:
-            t = datetime.strptime(message_text, '%H:%M')
-            user_settings[user_id]['time'] = t
+            # ユーザーが入力した時刻をパース
+            input_time = datetime.strptime(message_text, '%H:%M').time()
+            # 現在の日付と組み合わせて datetime オブジェクトを作成
+            now = datetime.now()
+            departure_datetime = datetime.combine(now.date(), input_time)
+        
+            # ユーザー設定に保存
+            user_settings[user_id]['time'] = departure_datetime
+        
+            # 確認メッセージの送信
             confirm_settings(event.reply_token, user_id)
+        
+            # 状態をリセット
             user_status[user_id] = {'state': None}
-            schedule_bus_check(user_id, t)
+        
+            # スケジュールの設定
+            schedule_bus_check(user_id, departure_datetime)
         except ValueError:
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text="正しい時刻形式で入力してください（例：08:30）")
             )
+
 
 ########################################
 # 新規追加: PostbackEvent 用ハンドラー
@@ -348,35 +361,26 @@ def schedule_bus_check(user_id, departure_time):
 
     # 乗車予定の時刻が今日の何時何分かを確認
     # 例: departure_time が 18:30 なら 18:30-7分 = 18:23
-    check_time_obj = departure_time - timedelta(minutes=7)
+    check_time = departure_time - timedelta(minutes=7)
 
-    # "HH:MM" 形式の文字列を作る(例: "18:23")
-    schedule_time_str = check_time_obj.strftime("%H:%M")
-
-    # schedule ライブラリでは「every().day.at(HH:MM)」が基本。
-    # デフォルトだと「すでに過ぎた時間なら翌日実行」になる可能性があるため、
-    # 自力で 'next_run' を当日の特定日時に設定する。
-    
-    job = schedule.every().day.at(schedule_time_str).do(
-        lambda: check_bus_location_loop(user_id, departure_time, job)
-    )
-
-    # 当日の年月日を now.date() で取得し、そこに check_time_obj の「時:分」を合わせる
-    # 「今日の 18:23」を next_run に設定。
-    # ただし、もし now > 18:23 を過ぎていたら時間がズレるので注意。
-    target_datetime = datetime.combine(now.date(), check_time_obj.time())
-    print(f"[DEBUG] schedule_bus_check: target_datetime={target_datetime}")
-    
+    # 当日の年月日を departure_time から取得
+    target_datetime = check_time
 
     # もしすでに過ぎている場合はどうする？ -> ここでキャンセルする/翌日にする etc.
     if target_datetime < now:
         print(f"[DEBUG] すでに設定時刻を過ぎています。キャンセルします。 (target_datetime={target_datetime}, now={now})")
         return
 
-    # ジョブの「次回実行時刻」を強制的に当日の target_datetime にする
-    job.next_run = target_datetime
+    # "HH:MM" 形式の文字列を作る(例: "18:23")
+    schedule_time_str = check_time.strftime("%H:%M")
 
-    print(f"[DEBUG] スケジュール設定: 当日 {job.next_run} に1回だけ監視を開始")
+    # スケジュールにジョブを追加
+    job = schedule.every().day.at(schedule_time_str).do(
+        lambda: check_bus_location_loop(user_id, departure_time, job)
+    )
+
+    print(f"[DEBUG] スケジュール設定: 当日 {check_time} に1回だけ監視を開始")
+
 
 
 def check_bus_location_loop(user_id, departure_time, job):
