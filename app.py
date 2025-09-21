@@ -1,3 +1,4 @@
+import math
 from flask import Flask, request
 import os
 from linebot import LineBotApi, WebhookHandler
@@ -75,13 +76,14 @@ STOP_CODES = {
     "小俣": "4105",
     "伊勢市駅前": "4110",
     "外宮前": "4115",
-    "内宮前": "4120"
+    "内宮前": "4120",
+    "三重大学前": "4325"
 }
 
 # 人気の停留所（使用頻度が高いと想定）
 POPULAR_STOPS = [
     "津駅前", "乙部朝日", "藤枝東", "イオンモール津南", 
-    "三重会館前", "御殿場口", "京口立町", "津新町駅前"
+    "三重会館前", "御殿場口", "京口立町", "三重大学前"
 ]
 
 # ================================================================
@@ -493,35 +495,90 @@ def check_bus_location(user_id):
 
 
 def schedule_bus_check(user_id, departure_time):
+    """
+    監視開始タイミングを判断して、threading.Timerで“1回だけ”起動。
+    7分前～出発までの間に設定されたら即時に開始。
+    """
     now = datetime.now()
     check_time = departure_time - timedelta(minutes=7)
-    cancel_user_monitoring(user_id)
 
-    if check_time < now:
-        line_bot_api.push_message(user_id, TextSendMessage(text="⚠️ 指定時間が過ぎているため監視を開始できませんでした。"))
+    # 既存ジョブを徹底クリア（同じユーザーの残骸ジョブを全消し）
+    cancel_user_monitoring(user_id)
+    schedule.clear(f"user_{user_id}")  # ←タグ全消しが重要
+
+    # すでに監視ウィンドウ内なら即スタート
+    if check_time <= now < departure_time:
+        print(f"[SCHED] immediate start for {user_id}")
+        # 取り消し判定用のダミーを入れておく（Timerではない印として None）
+        user_active_jobs[user_id] = {"job": None, "departure_time": departure_time, "monitoring_thread": None}
+        check_bus_location_loop(user_id, departure_time)  # 中でThread起動
         return
 
-    tag = f"user_{user_id}"
-    job = schedule.every().day.at(check_time.strftime("%H:%M")).do(
-        lambda: check_bus_location_loop(user_id, departure_time)
-    ).tag(tag)
+    # 既に出発時刻を過ぎているなら実行しない
+    if now >= departure_time:
+        try:
+            line_bot_api.push_message(
+                user_id, TextSendMessage(text="⚠️ 指定時刻を過ぎているため監視を開始できませんでした。")
+            )
+        except LineBotApiError as e:
+            print(f"[DEBUG]LINEメッセージ送信エラー: {e}")
+        return
 
-    user_active_jobs[user_id] = {"job": job, "departure_time": departure_time, "monitoring_thread": None}
-    print(f"[DEBUG]schedule_bus_check: user={user_id}, start={check_time}")
+    # 単発起動：開始時刻までの秒数だけ待って monitor を1回だけ起動
+    delay = max(0, (check_time - now).total_seconds())
+    timer = threading.Timer(delay, lambda: check_bus_location_loop(user_id, departure_time))
+    timer.daemon = True
+    timer.start()
+
+    user_active_jobs[user_id] = {
+        "job": timer,  # schedule.Job ではなく Timer を保持
+        "departure_time": departure_time,
+        "monitoring_thread": None
+    }
+    print(f"[SCHED] timer for {user_id} in {math.ceil(delay)}s (at {check_time:%H:%M})")
 
 
 def cancel_user_monitoring(user_id):
-    if user_id not in user_active_jobs:
+    """
+    ユーザーの監視を完全停止。
+    - schedule.Job のとき: cancel_job()
+    - threading.Timer のとき: cancel()
+    - None（即時監視ダミー）のとき: 何もしない
+    さらに schedule.clear(tag) でタグ全消し（重複ジョブの残骸対策）
+    """
+    tag = f"user_{user_id}"
+    schedule.clear(tag)  # ← これが肝。タグ付き残骸を全部消す
+
+    info = user_active_jobs.pop(user_id, None)
+    if not info:
         return False
 
-    info = user_active_jobs.pop(user_id)
-    schedule.cancel_job(info["job"])
-    bus_session.clear_user_info(user_id)
-    print(f"[DEBUG]cancel_user_monitoring: user={user_id}")
+    job = info.get("job")
+    try:
+        if job is None:
+            pass  # 即時監視ダミー
+        elif isinstance(job, threading.Timer):
+            job.cancel()
+        else:
+            # 過去互換（もし schedule.Job が入っていても消せるように）
+            try:
+                schedule.cancel_job(job)
+            except Exception:
+                pass
+    finally:
+        bus_session.clear_user_info(user_id)
+        print(f"[DEBUG]cancel_user_monitoring: user={user_id}")
     return True
 
 
 def check_bus_location_loop(user_id, departure_time):
+    def check_bus_location_loop(user_id, departure_time):
+    # もし何らかの理由で過去のジョブが起動してしまったら、黙って破棄（終了通知もしない）
+    if datetime.now() >= departure_time + timedelta(minutes=5):
+        user_active_jobs.pop(user_id, None)
+        bus_session.clear_user_info(user_id)
+        return
+        
     end_time = departure_time + timedelta(minutes=5)
 
     def loop():
