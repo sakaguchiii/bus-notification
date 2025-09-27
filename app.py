@@ -572,13 +572,12 @@ def cancel_user_monitoring(user_id):
 
 
 def check_bus_location_loop(user_id, departure_time):
-    def check_bus_location_loop(user_id, departure_time):
     # もし何らかの理由で過去のジョブが起動してしまったら、黙って破棄（終了通知もしない）
     if datetime.now() >= departure_time + timedelta(minutes=5):
         user_active_jobs.pop(user_id, None)
         bus_session.clear_user_info(user_id)
         return
-        
+
     end_time = departure_time + timedelta(minutes=5)
 
     def loop():
@@ -586,10 +585,14 @@ def check_bus_location_loop(user_id, departure_time):
             check_bus_location(user_id)
             time.sleep(15)
 
+        # 監視終了処理
         user_active_jobs.pop(user_id, None)
         bus_session.clear_user_info(user_id)
         try:
-            line_bot_api.push_message(user_id, TextSendMessage(text="✅ バス監視を終了しました。お疲れさまでした！"))
+            line_bot_api.push_message(
+                user_id,
+                TextSendMessage(text="✅ バス監視を終了しました。お疲れさまでした！")
+            )
         except LineBotApiError as e:
             print(f"[DEBUG]push_message error: {e}")
 
